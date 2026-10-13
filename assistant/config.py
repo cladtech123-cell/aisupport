@@ -25,8 +25,8 @@ SETTING_KEYS: Tuple[str, ...] = (
     "PROFILE_PATH",
 )
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-_LEGACY_DEFAULT_MODELS = frozenset({"gemini-2.5-flash"})
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+_LEGACY_DEFAULT_MODELS = frozenset({"gemini-2.5-flash", "gemini-3.8-flash"})
 
 _BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{5,}$")
 _BOOL_TRUE = frozenset({"true", "1", "yes", "on"})

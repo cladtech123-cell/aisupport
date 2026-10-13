@@ -203,6 +203,15 @@ async def _default_http_transport(
             return resp.status, text
 
 
+FALLBACK_GEMINI_MODELS: Tuple[str, ...] = (
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+)
+
+
 class GeminiClient:
     """Async client for generating replies with Google Gemini API."""
 
@@ -210,7 +219,7 @@ class GeminiClient:
         self,
         *,
         api_key: Optional[str],
-        model: str = "gemini-3.8-flash",
+        model: str = "gemini-3.6-flash",
         timeout: int = 60,
         auth_label: Optional[str] = None,
         transport: Optional[TransportFunc] = None,
@@ -219,6 +228,7 @@ class GeminiClient:
         self.model = model
         self.timeout = max(1, int(timeout))
         self._auth_label = auth_label
+        self._custom_transport = transport is not None
         self._transport: TransportFunc = transport or _default_http_transport
 
     @property
@@ -243,7 +253,6 @@ class GeminiClient:
                 detail="missing GEMINI_API_KEY",
             )
 
-        url = f"{GEMINI_API_BASE}/{self.model}:generateContent"
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": self._api_key,
@@ -263,10 +272,17 @@ class GeminiClient:
             },
         }
 
+        if self._custom_transport:
+            models_to_try = [self.model]
+        else:
+            models_to_try = [self.model] + [
+                m for m in FALLBACK_GEMINI_MODELS if m != self.model
+            ]
+
         status = 0
         body = ""
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
+        for idx, candidate_model in enumerate(models_to_try):
+            url = f"{GEMINI_API_BASE}/{candidate_model}:generateContent"
             try:
                 status, body = await asyncio.wait_for(
                     self._transport(url, headers, payload, float(self.timeout)),
@@ -280,8 +296,10 @@ class GeminiClient:
                 safe_err = redact_secret(str(exc), self._api_key)
                 raise AIError(f"Gemini API network error: {safe_err[:300]}") from exc
 
-            if status in (502, 503, 504) and attempt < max_attempts:
-                await asyncio.sleep(1.5 * attempt)
+            if (
+                status in (404, 429, 500, 502, 503, 504)
+                and idx + 1 < len(models_to_try)
+            ):
                 continue
             break
 
