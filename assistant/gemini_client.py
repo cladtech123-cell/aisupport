@@ -263,18 +263,27 @@ class GeminiClient:
             },
         }
 
-        try:
-            status, body = await asyncio.wait_for(
-                self._transport(url, headers, payload, float(self.timeout)),
-                timeout=float(self.timeout),
-            )
-        except asyncio.TimeoutError as exc:
-            raise AITimeout(
-                f"Gemini API request timed out after {self.timeout}s."
-            ) from exc
-        except aiohttp.ClientError as exc:
-            safe_err = redact_secret(str(exc), self._api_key)
-            raise AIError(f"Gemini API network error: {safe_err[:300]}") from exc
+        status = 0
+        body = ""
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                status, body = await asyncio.wait_for(
+                    self._transport(url, headers, payload, float(self.timeout)),
+                    timeout=float(self.timeout),
+                )
+            except asyncio.TimeoutError as exc:
+                raise AITimeout(
+                    f"Gemini API request timed out after {self.timeout}s."
+                ) from exc
+            except aiohttp.ClientError as exc:
+                safe_err = redact_secret(str(exc), self._api_key)
+                raise AIError(f"Gemini API network error: {safe_err[:300]}") from exc
+
+            if status in (502, 503, 504) and attempt < max_attempts:
+                await asyncio.sleep(1.5 * attempt)
+                continue
+            break
 
         return parse_gemini_response(status, body, secret=self._api_key)
 

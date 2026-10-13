@@ -236,12 +236,14 @@ class Assistant:
 
         self.connections: Dict[str, Any] = {}
         self.outcomes: Deque[Outcome] = deque(maxlen=100)
+        self.last_detail: Optional[str] = None
         self._takeover_until: Dict[Tuple[str, int], float] = {}
         self._chat_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
         self._last_error_notify_at: float = 0.0
 
-    def _record(self, outcome: Outcome) -> Outcome:
+    def _record(self, outcome: Outcome, detail: Optional[str] = None) -> Outcome:
         self.outcomes.append(outcome)
+        self.last_detail = detail
         return outcome
 
     def _get_lock(self, connection_id: str, chat_id: int) -> asyncio.Lock:
@@ -448,7 +450,7 @@ class Assistant:
                         f"⚠️ AI usage limit reached. Replies are paused until {until_iso} "
                         "(or send /resume to clear early).",
                     )
-                return self._record(Outcome.limited)
+                return self._record(Outcome.limited, str(exc))
             except AIError as exc:
                 err_now = self.clock()
                 logger.error("AI generation failed for chat %s: %s", chat_id, exc)
@@ -462,7 +464,7 @@ class Assistant:
                         bot,
                         f"⚠️ Assistant error while generating a reply: {exc}",
                     )
-                return self._record(Outcome.error)
+                return self._record(Outcome.error, str(exc))
 
             reply = (raw_reply or "").strip()
 
@@ -497,7 +499,7 @@ class Assistant:
                         note=f"not sent: {post_block.value}",
                     )
                 )
-                return self._record(post_block)
+                return self._record(post_block, f"not sent: {post_block.value}")
 
             # Re-fetch business connection directly from Telegram (never from cache)
             try:
@@ -520,7 +522,10 @@ class Assistant:
                         note="permission denied: connection lookup failed",
                     )
                 )
-                return self._record(Outcome.permission_denied)
+                return self._record(
+                    Outcome.permission_denied,
+                    "connection lookup failed",
+                )
 
             fresh_user_id = getattr(getattr(fresh_conn, "user", None), "id", None)
             if fresh_user_id != self.settings.owner_id:
@@ -535,7 +540,10 @@ class Assistant:
                         note="permission denied: foreign connection owner",
                     )
                 )
-                return self._record(Outcome.permission_denied)
+                return self._record(
+                    Outcome.permission_denied,
+                    "foreign connection owner",
+                )
 
             if not getattr(fresh_conn, "is_enabled", False):
                 self._write_preview(
@@ -549,7 +557,10 @@ class Assistant:
                         note="permission denied: connection disabled",
                     )
                 )
-                return self._record(Outcome.permission_denied)
+                return self._record(
+                    Outcome.permission_denied,
+                    "connection is disabled in Telegram",
+                )
 
             if not can_reply(fresh_conn):
                 self._write_preview(
@@ -563,7 +574,10 @@ class Assistant:
                         note="permission denied: can_reply is false",
                     )
                 )
-                return self._record(Outcome.permission_denied)
+                return self._record(
+                    Outcome.permission_denied,
+                    "can_reply is false (enable 'Reply to messages' in Telegram Business -> Chatbots)",
+                )
 
             chunks = _split_chunks(reply, MAX_TELEGRAM_MESSAGE_LENGTH)
             try:
@@ -575,7 +589,7 @@ class Assistant:
                     )
             except TelegramAPIError as exc:
                 logger.error("Failed to send business reply to %s: %s", chat_id, exc)
-                return self._record(Outcome.error)
+                return self._record(Outcome.error, f"Telegram send failed: {exc}")
 
             self.history.add(
                 conn_id,
@@ -617,9 +631,29 @@ class Assistant:
         else:
             limit_line = "Rate limit cooldown: none"
 
+        active_takeovers = sum(
+            1 for until in self._takeover_until.values() if until > now
+        )
+        takeover_line = f"Active owner takeover timers: {active_takeovers}"
+        last_outcome_val = self.outcomes[-1].value if self.outcomes else "none"
+        if self.last_detail:
+            last_line = f"Last outcome: {last_outcome_val} ({self.last_detail})"
+        else:
+            last_line = f"Last outcome: {last_outcome_val}"
+
         chats_line = f"Tracked chats in history: {self.history.chat_count()}"
         model_line = f"AI model: {self.settings.gemini_model}"
-        return "\n".join([mode_line, state_line, limit_line, model_line, chats_line])
+        return "\n".join(
+            [
+                mode_line,
+                state_line,
+                limit_line,
+                model_line,
+                chats_line,
+                takeover_line,
+                last_line,
+            ]
+        )
 
     def start_text(self) -> str:
         """Build an Uzbek onboarding and status guide for the bot owner."""
